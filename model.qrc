@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/model">
+        <file>vad/lei-jun-test.wav</file>
+        <file>vad/silero_vad.onnx</file>
+        <file>vad/ten-vad.onnx</file>
+    </qresource>
+</RCC>
