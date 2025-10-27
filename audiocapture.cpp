@@ -3,14 +3,15 @@
 #include <QMediaDevices>
 #include <QDebug>
 #include <QtEndian>
-#include <cmath> // 添加cmath用于数学计算
+#include <cmath>
+#include <QElapsedTimer>
 
 AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
 {
     setupAudioFormat();
     m_timer = new QTimer(this);
-    m_timer->setInterval(20); // 20ms processing interval
     connect(m_timer, &QTimer::timeout, this, &AudioCapture::processAudioData);
+    m_totalBytesProcessed = 0; // 在构造函数中初始化
 }
 
 AudioCapture::~AudioCapture()
@@ -54,7 +55,11 @@ void AudioCapture::startCapture()
         return;
     }
 
-    m_timer->start();
+    // 重置计数器
+    m_totalBytesProcessed = 0; // 确保这里使用了成员变量
+
+    // 使用更精确的定时器
+    m_timer->start(20); // 20ms间隔
     qDebug() << "Capture started with format:"
              << "\nSample rate:" << m_audioFormat.sampleRate()
              << "\nChannels:" << m_audioFormat.channelCount()
@@ -68,15 +73,47 @@ void AudioCapture::stopCapture()
         m_timer->stop();
     }
 
+    // 处理剩余数据
+    if (m_audioIO && m_audioSource) {
+        processRemainingData();
+    }
+
     if (m_audioSource) {
         m_audioSource->stop();
         delete m_audioSource;
         m_audioSource = nullptr;
+        m_audioIO = nullptr;
     }
 
     if (!m_audioQueue.isEmpty()) {
         writeWavFile();
         m_audioQueue.clear();
+    }
+
+    qDebug() << "Total audio data processed:" << m_totalBytesProcessed << "bytes";
+}
+
+// 实现处理剩余数据的函数
+void AudioCapture::processRemainingData()
+{
+    if (!m_audioIO) return;
+
+    // 获取缓冲区中剩余的所有数据
+    qint64 bytesAvailable = m_audioIO->bytesAvailable();
+    if (bytesAvailable <= 0) return;
+
+    QByteArray rawData = m_audioIO->readAll();
+    if (rawData.isEmpty()) return;
+
+    // 如果需要重采样
+    if (m_resampleRequired) {
+        rawData = resampleTo16kHzMono(rawData, m_audioFormat);
+    }
+
+    if (!rawData.isEmpty()) {
+        m_audioQueue.enqueue(rawData);
+        m_totalBytesProcessed += rawData.size(); // 更新总字节数
+        qDebug() << "Processed remaining data:" << rawData.size() << "bytes";
     }
 }
 
@@ -84,10 +121,10 @@ void AudioCapture::processAudioData()
 {
     if (!m_audioIO) return;
 
-    // 计算20ms音频数据所需字节数
-    int bytesPerSample = m_audioFormat.bytesPerSample();
+    // 计算20ms音频数据所需字节数（使用实际采样率）
     int bytesPerFrame = m_audioFormat.bytesPerFrame();
-    int bytesNeeded = (16000 * bytesPerFrame * 20) / 1000; // 始终以16kHz为目标
+    int bytesNeeded = (m_audioFormat.sampleRate() * bytesPerFrame * 20) / 1000;
+    bytesNeeded = qMax(bytesNeeded, 0);
 
     // 确保有足够数据可用
     if (m_audioIO->bytesAvailable() < bytesNeeded) {
@@ -102,7 +139,14 @@ void AudioCapture::processAudioData()
         rawData = resampleTo16kHzMono(rawData, m_audioFormat);
     }
 
-    m_audioQueue.enqueue(rawData);
+    if (!rawData.isEmpty()) {
+        m_audioQueue.enqueue(rawData);
+        m_totalBytesProcessed += rawData.size(); // 更新总字节数
+
+        // 调试输出
+        qDebug() << "Processed chunk:" << rawData.size() << "bytes"
+                 << "Total:" << m_totalBytesProcessed << "bytes";
+    }
 }
 
 QByteArray AudioCapture::resampleTo16kHzMono(const QByteArray &input, const QAudioFormat &format)
@@ -119,9 +163,15 @@ QByteArray AudioCapture::resampleTo16kHzMono(const QByteArray &input, const QAud
         return input;
     }
 
-    // 计算输入输出样本数
+    // 计算输入样本数
     const int inSamples = input.size() / (channels * bytesPerSample);
-    const int outSamples = (inSamples * outSampleRate) / inSampleRate;
+    if (inSamples < 2) {
+        qWarning() << "Not enough samples for resampling:" << inSamples;
+        return QByteArray();
+    }
+
+    // 计算输出样本数（20ms的目标）
+    const int outSamples = (outSampleRate * 20) / 1000;
 
     QByteArray output;
     output.resize(outSamples * sizeof(qint16));
@@ -129,7 +179,7 @@ QByteArray AudioCapture::resampleTo16kHzMono(const QByteArray &input, const QAud
     const qint16 *inPtr = reinterpret_cast<const qint16*>(input.constData());
     qint16 *outPtr = reinterpret_cast<qint16*>(output.data());
 
-    // 简单但有效的重采样算法
+    // 改进的重采样算法
     const double ratio = static_cast<double>(inSampleRate) / outSampleRate;
     double pos = 0.0;
 
@@ -230,5 +280,10 @@ void AudioCapture::writeWavFile()
     }
 
     file.close();
-    qDebug() << "Audio saved to captured_audio.wav (" << dataSize << "bytes)";
+
+    // 计算预期时长
+    double expectedDuration = static_cast<double>(dataSize) / (sampleRate * channels * (bitsPerSample / 8));
+    qDebug() << "Audio saved to captured_audio.wav ("
+             << dataSize << "bytes, "
+             << expectedDuration << "seconds)";
 }

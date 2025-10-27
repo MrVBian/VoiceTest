@@ -33,10 +33,12 @@ private:
     QAudioFormat m_audioFormat;
     QQueue<QByteArray> m_audioQueue;
     bool m_resampleRequired = false;
+    qint64 m_totalBytesProcessed = 0; // 确保这里声明了成员变量
 
     void setupAudioFormat();
     QByteArray resampleTo16kHzMono(const QByteArray &input, const QAudioFormat &format);
     void writeWavFile();
+    void processRemainingData();
 };
 
 #endif // AUDIOCAPTURE_H
