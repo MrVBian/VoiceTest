@@ -1,0 +1,42 @@
+#ifndef AUDIOCAPTURE_H
+#define AUDIOCAPTURE_H
+
+#include <QObject>
+#include <QAudioSource>
+#include <QAudioFormat>
+#include <QBuffer>
+#include <QQueue>
+#include <QFile>
+#include <QTimer>
+#include <QAudioDevice>
+
+class AudioCapture : public QObject
+{
+    Q_OBJECT
+public:
+    explicit AudioCapture(QObject *parent = nullptr);
+    ~AudioCapture();
+
+    void startCapture();
+    void stopCapture();
+
+signals:
+    void errorOccurred(const QString &message);
+
+private slots:
+    void processAudioData();
+
+private:
+    QAudioSource *m_audioSource = nullptr;
+    QIODevice *m_audioIO = nullptr;
+    QTimer *m_timer = nullptr;
+    QAudioFormat m_audioFormat;
+    QQueue<QByteArray> m_audioQueue;
+    bool m_resampleRequired = false;
+
+    void setupAudioFormat();
+    QByteArray resampleTo16kHzMono(const QByteArray &input, const QAudioFormat &format);
+    void writeWavFile();
+};
+
+#endif // AUDIOCAPTURE_H

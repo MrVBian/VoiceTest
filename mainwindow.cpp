@@ -7,6 +7,10 @@
 #include <string.h>
 #include "sherpa-onnx/c-api/c-api.h"
 
+#include <QDebug>
+#include <QDir>
+#include <QMessageBox>
+
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -76,113 +80,44 @@ MainWindow::MainWindow(QWidget *parent)
         SherpaOnnxFreeWave(wave);
     });
 
-    connect(ui->testBtn2, &QPushButton::clicked, this, [this]() {
-        // 加载音频
-        const char *wav_filename = "vad/lei-jun-test.wav";
-        if (!SherpaOnnxFileExists(wav_filename)) {
-            fprintf(stderr, "Please download %s\n", wav_filename);
-        }
-        const SherpaOnnxWave *wave = SherpaOnnxReadWave(wav_filename);
-        if (wave == NULL) {
-            fprintf(stderr, "Failed to read %s\n", wav_filename);
-            return;
-        }
-        if (wave->sample_rate != 16000) {
-            fprintf(stderr, "Expect the sample rate to be 16000. Given: %d\n",
-                    wave->sample_rate);
-            SherpaOnnxFreeWave(wave);
-            return;
-        }
 
+    senseVoice = new SenseVoice(this);
+    audioCapture = new AudioCapture(this);
 
-        // 初始化模型
-        const char *vad_filename;
-        int32_t use_silero_vad = 0;
-        int32_t use_ten_vad = 0;
-
-        if (SherpaOnnxFileExists("./vad/silero_vad.onnx")) {
-            printf("Use silero-vad\n");
-            vad_filename = "./vad/silero_vad.onnx";
-            use_silero_vad = 1;
-        } else if (SherpaOnnxFileExists("./vad/ten-vad.onnx")) {
-            printf("Use ten-vad\n");
-            vad_filename = "./vad/ten-vad.onnx";
-            use_ten_vad = 1;
-        } else {
-            fprintf(stderr, "Please provide either silero_vad.onnx or ten-vad.onnx\n");
-            return;
-        }
-
-        SherpaOnnxVadModelConfig vadConfig;
-        memset(&vadConfig, 0, sizeof(vadConfig));
-
-        if (use_silero_vad) {
-            vadConfig.silero_vad.model = vad_filename;
-            vadConfig.silero_vad.threshold = 0.25;
-            vadConfig.silero_vad.min_silence_duration = 0.5;
-            vadConfig.silero_vad.min_speech_duration = 0.5;
-            vadConfig.silero_vad.max_speech_duration = 10;
-            vadConfig.silero_vad.window_size = 512;
-        } else if (use_ten_vad) {
-            vadConfig.ten_vad.model = vad_filename;
-            vadConfig.ten_vad.threshold = 0.25;
-            vadConfig.ten_vad.min_silence_duration = 0.5;
-            vadConfig.ten_vad.min_speech_duration = 0.5;
-            vadConfig.ten_vad.max_speech_duration = 10;
-            vadConfig.ten_vad.window_size = 256;
-        }
-
-        vadConfig.sample_rate = 16000;
-        vadConfig.num_threads = 1;
-        vadConfig.debug = 1;
-
-        const SherpaOnnxVoiceActivityDetector *vad =
-            SherpaOnnxCreateVoiceActivityDetector(&vadConfig, 30);
-
-
-        if (vad == NULL) {
-            fprintf(stderr, "Please check your recognizer config!\n");
-            SherpaOnnxFreeWave(wave);
-            return ;
-        }
-
-        int32_t window_size = use_silero_vad ? vadConfig.silero_vad.window_size
-                                             : vadConfig.ten_vad.window_size;
-
-        int32_t i = 0;
-        int is_eof = 0;
-
-        while (!is_eof) {
-            if (i + window_size < wave->num_samples) {
-                SherpaOnnxVoiceActivityDetectorAcceptWaveform(vad, wave->samples + i,
-                                                              window_size);
-            } else {
-                SherpaOnnxVoiceActivityDetectorFlush(vad);
-                is_eof = 1;
-            }
-            while (!SherpaOnnxVoiceActivityDetectorEmpty(vad)) {
-                const SherpaOnnxSpeechSegment *segment =
-                    SherpaOnnxVoiceActivityDetectorFront(vad);
-
-                float start = segment->start / 16000.0f;
-                float duration = segment->n / 16000.0f;
-                float stop = start + duration;
-
-                fprintf(stderr, "%.3f -- %.3f\n", start, stop);
-                // fprintf(stderr, "%.3f -- %.3f: %s\n", start, stop, result->text);
-
-                SherpaOnnxDestroySpeechSegment(segment);
-                SherpaOnnxVoiceActivityDetectorPop(vad);
-            }
-            i += window_size;
-        }
-
-
-        SherpaOnnxDestroyVoiceActivityDetector(vad);
-        SherpaOnnxFreeWave(wave);
+    connect(ui->testBtn2, &QPushButton::clicked, this, [this, appDir]() {
+        audioCapture->startCapture();
     });
 
+    connect(ui->testBtn3, &QPushButton::clicked, this, [this, appDir]() {
+        audioCapture->stopCapture();  // 停止录音
+    });
+
+    // connect(ui->testBtn2, &QPushButton::clicked, this, &MainWindow::on_testBtn2_clicked);
+    // connect(senseVoice, &SenseVoice::recordingStatusChanged,
+    //         this, &MainWindow::updateRecordingStatus);
+
+    // connect(ui->testBtn2, &QPushButton::clicked, this, &MainWindow::toggleRecording);
+
+    // connect(ui->testBtn3, &QPushButton::clicked,
+    //         senseVoice, &SenseVoice::saveRecording);
 }
+
+
+void MainWindow::toggleRecording()
+{
+    if (senseVoice->isRecording()) {
+        senseVoice->stopRecording();
+    } else {
+        senseVoice->startRecording();
+    }
+}
+
+void MainWindow::updateRecordingStatus(bool recording)
+{
+    ui->testBtn2->setText(recording ? "Stop Recording" : "Start Recording");
+    ui->label->setText(recording ? "Recording..." : "Ready");
+}
+
 
 MainWindow::~MainWindow()
 {
