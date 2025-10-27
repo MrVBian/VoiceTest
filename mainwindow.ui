@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>800</width>
-    <height>600</height>
+    <width>465</width>
+    <height>167</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -17,86 +17,27 @@
    <widget class="QPushButton" name="testBtn">
     <property name="geometry">
      <rect>
-      <x>74</x>
-      <y>60</y>
+      <x>70</x>
+      <y>80</y>
       <width>121</width>
       <height>23</height>
      </rect>
     </property>
     <property name="text">
-     <string>PushButton</string>
+     <string>语音识别</string>
     </property>
-   </widget>
-   <widget class="QTabWidget" name="tabWidget">
-    <property name="geometry">
-     <rect>
-      <x>80</x>
-      <y>100</y>
-      <width>491</width>
-      <height>221</height>
-     </rect>
-    </property>
-    <property name="currentIndex">
-     <number>0</number>
-    </property>
-    <widget class="QWidget" name="tab">
-     <attribute name="title">
-      <string>Tab 1</string>
-     </attribute>
-     <widget class="QPushButton" name="pushButton">
-      <property name="geometry">
-       <rect>
-        <x>50</x>
-        <y>80</y>
-        <width>75</width>
-        <height>23</height>
-       </rect>
-      </property>
-      <property name="text">
-       <string>PushButton</string>
-      </property>
-     </widget>
-    </widget>
-    <widget class="QWidget" name="tab_2">
-     <attribute name="title">
-      <string>Tab 2</string>
-     </attribute>
-     <widget class="QPushButton" name="pushButton_3">
-      <property name="geometry">
-       <rect>
-        <x>70</x>
-        <y>40</y>
-        <width>75</width>
-        <height>23</height>
-       </rect>
-      </property>
-      <property name="text">
-       <string>PushButton</string>
-      </property>
-     </widget>
-    </widget>
    </widget>
    <widget class="QPushButton" name="testBtn2">
     <property name="geometry">
      <rect>
       <x>220</x>
-      <y>60</y>
+      <y>80</y>
       <width>121</width>
       <height>23</height>
      </rect>
     </property>
     <property name="text">
-     <string>PushButton</string>
-    </property>
-   </widget>
-   <widget class="QTextEdit" name="textEdit">
-    <property name="geometry">
-     <rect>
-      <x>80</x>
-      <y>330</y>
-      <width>561</width>
-      <height>211</height>
-     </rect>
+     <string>录音</string>
     </property>
    </widget>
    <widget class="QLabel" name="label">
@@ -116,13 +57,26 @@
     <property name="geometry">
      <rect>
       <x>220</x>
-      <y>10</y>
+      <y>30</y>
       <width>121</width>
       <height>23</height>
      </rect>
     </property>
     <property name="text">
-     <string>PushButton</string>
+     <string>保存</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="testBtn4">
+    <property name="geometry">
+     <rect>
+      <x>70</x>
+      <y>30</y>
+      <width>121</width>
+      <height>23</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>VAD</string>
     </property>
    </widget>
   </widget>
@@ -131,7 +85,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>800</width>
+     <width>465</width>
      <height>21</height>
     </rect>
    </property>

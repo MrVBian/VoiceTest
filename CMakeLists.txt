@@ -35,7 +35,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(untitled
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
-        sensevoice.h sensevoice.cpp
+
         model.qrc
         audiocapture.h audiocapture.cpp
 

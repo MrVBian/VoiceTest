@@ -2,7 +2,6 @@
 #define MAINWINDOW_H
 
 #include "audiocapture.h"
-#include "sensevoice.h"
 #include <QMainWindow>
 
 QT_BEGIN_NAMESPACE
@@ -22,12 +21,6 @@ public:
 private:
     Ui::MainWindow *ui;
 
-    SenseVoice *senseVoice;
     AudioCapture *audioCapture;
-
-private slots:
-    void toggleRecording();
-    void updateRecordingStatus(bool recording);
-
 };
 #endif // MAINWINDOW_H

@@ -3,8 +3,11 @@
 #include <QMediaDevices>
 #include <QDebug>
 #include <QtEndian>
-#include <cmath>
 #include <QElapsedTimer>
+
+
+// Vad
+#include "sherpa-onnx/c-api/c-api.h"
 
 AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
 {
@@ -12,6 +15,53 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
     m_timer = new QTimer(this);
     connect(m_timer, &QTimer::timeout, this, &AudioCapture::processAudioData);
     m_totalBytesProcessed = 0; // 在构造函数中初始化
+
+
+
+    // Vad
+    if (SherpaOnnxFileExists("./vad/silero_vad.onnx")) {
+        printf("Use silero-vad\n");
+        vad_filename = "./vad/silero_vad.onnx";
+        use_silero_vad = 1;
+    } else if (SherpaOnnxFileExists("./vad/ten-vad.onnx")) {
+        printf("Use ten-vad\n");
+        vad_filename = "./vad/ten-vad.onnx";
+        use_ten_vad = 1;
+    } else {
+        fprintf(stderr, "Please provide either silero_vad.onnx or ten-vad.onnx\n");
+        return;
+    }
+
+    SherpaOnnxVadModelConfig vadConfig;
+    memset(&vadConfig, 0, sizeof(vadConfig));
+
+    if (use_silero_vad) {
+        vadConfig.silero_vad.model = vad_filename;
+        vadConfig.silero_vad.threshold = 0.25;
+        vadConfig.silero_vad.min_silence_duration = 0.5;
+        vadConfig.silero_vad.min_speech_duration = 0.5;
+        vadConfig.silero_vad.max_speech_duration = 10;
+        vadConfig.silero_vad.window_size = 512;
+    } else if (use_ten_vad) {
+        vadConfig.ten_vad.model = vad_filename;
+        vadConfig.ten_vad.threshold = 0.25;
+        vadConfig.ten_vad.min_silence_duration = 0.5;
+        vadConfig.ten_vad.min_speech_duration = 0.5;
+        vadConfig.ten_vad.max_speech_duration = 10;
+        vadConfig.ten_vad.window_size = 256;
+    }
+
+    vadConfig.sample_rate = 16000;
+    vadConfig.num_threads = 1;
+    vadConfig.debug = 1;
+
+    const SherpaOnnxVoiceActivityDetector *vad =
+        SherpaOnnxCreateVoiceActivityDetector(&vadConfig, 30);
+
+    if (vad == NULL) {
+        fprintf(stderr, "Please check your recognizer config!\n");
+        return ;
+    }
 }
 
 AudioCapture::~AudioCapture()
@@ -140,6 +190,21 @@ void AudioCapture::processAudioData()
     }
 
     if (!rawData.isEmpty()) {
+
+        // 音频
+        const SherpaOnnxWave *wave = SherpaOnnxReadWave(rawData);
+        if (wave == NULL) {
+            fprintf(stderr, "Failed to read voice\n");
+            return;
+        }
+        if (wave->sample_rate != 16000) {
+            fprintf(stderr, "Expect the sample rate to be 16000. Given: %d\n",
+                    wave->sample_rate);
+            SherpaOnnxFreeWave(wave);
+            return;
+        }
+
+
         m_audioQueue.enqueue(rawData);
         m_totalBytesProcessed += rawData.size(); // 更新总字节数
 
@@ -233,7 +298,7 @@ void AudioCapture::writeWavFile()
 
     // 计算总数据大小
     qint64 dataSize = 0;
-    for (const QByteArray &chunk : m_audioQueue) {
+    for (const QByteArray &chunk : std::as_const(m_audioQueue)) {
         dataSize += chunk.size();
     }
 
@@ -275,7 +340,7 @@ void AudioCapture::writeWavFile()
     file.write(header);
 
     // 写入音频数据
-    for (const QByteArray &chunk : m_audioQueue) {
+    for (const QByteArray &chunk : std::as_const(m_audioQueue)) {
         file.write(chunk);
     }
 

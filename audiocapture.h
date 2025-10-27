@@ -39,6 +39,12 @@ private:
     QByteArray resampleTo16kHzMono(const QByteArray &input, const QAudioFormat &format);
     void writeWavFile();
     void processRemainingData();
+
+
+    // Vad
+    const char *vad_filename;
+    int32_t use_silero_vad = 0;
+    int32_t use_ten_vad = 0;
 };
 
 #endif // AUDIOCAPTURE_H
