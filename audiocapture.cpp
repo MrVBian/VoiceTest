@@ -6,9 +6,6 @@
 #include <QElapsedTimer>
 
 
-// Vad
-#include "sherpa-onnx/c-api/c-api.h"
-
 AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
 {
     setupAudioFormat();
@@ -17,6 +14,8 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
     m_totalBytesProcessed = 0; // 在构造函数中初始化
 
 
+    // 初始化wav头
+    initFixedHeader();
 
     // Vad
     if (SherpaOnnxFileExists("./vad/silero_vad.onnx")) {
@@ -32,7 +31,6 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
         return;
     }
 
-    SherpaOnnxVadModelConfig vadConfig;
     memset(&vadConfig, 0, sizeof(vadConfig));
 
     if (use_silero_vad) {
@@ -41,7 +39,7 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
         vadConfig.silero_vad.min_silence_duration = 0.5;
         vadConfig.silero_vad.min_speech_duration = 0.5;
         vadConfig.silero_vad.max_speech_duration = 10;
-        vadConfig.silero_vad.window_size = 512;
+        vadConfig.silero_vad.window_size = 320;
     } else if (use_ten_vad) {
         vadConfig.ten_vad.model = vad_filename;
         vadConfig.ten_vad.threshold = 0.25;
@@ -55,8 +53,7 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
     vadConfig.num_threads = 1;
     vadConfig.debug = 1;
 
-    const SherpaOnnxVoiceActivityDetector *vad =
-        SherpaOnnxCreateVoiceActivityDetector(&vadConfig, 30);
+    vad = SherpaOnnxCreateVoiceActivityDetector(&vadConfig, 30);
 
     if (vad == NULL) {
         fprintf(stderr, "Please check your recognizer config!\n");
@@ -67,6 +64,7 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
 AudioCapture::~AudioCapture()
 {
     stopCapture();
+    SherpaOnnxDestroyVoiceActivityDetector(vad);
 }
 
 void AudioCapture::setupAudioFormat()
@@ -172,11 +170,15 @@ void AudioCapture::processAudioData()
     if (!m_audioIO) return;
 
     // 计算20ms音频数据所需字节数（使用实际采样率）
+    // sampleRate: 48000
+    // bytesPerFrame: 4(2通道*2字节)
+    // bytesNeeded: 3840
+    // rawData: 3840/640
     int bytesPerFrame = m_audioFormat.bytesPerFrame();
     int bytesNeeded = (m_audioFormat.sampleRate() * bytesPerFrame * 20) / 1000;
     bytesNeeded = qMax(bytesNeeded, 0);
 
-    // 确保有足够数据可用
+    // 确保有足够数据可用，最后小于20ms数据会被丢弃
     if (m_audioIO->bytesAvailable() < bytesNeeded) {
         return;
     }
@@ -189,28 +191,69 @@ void AudioCapture::processAudioData()
         rawData = resampleTo16kHzMono(rawData, m_audioFormat);
     }
 
+    bool voiceDetected = false;
     if (!rawData.isEmpty()) {
 
         // 音频
-        const SherpaOnnxWave *wave = SherpaOnnxReadWave(rawData);
-        if (wave == NULL) {
-            fprintf(stderr, "Failed to read voice\n");
+        // qint64 dataSize = rawData.size();
+        // QByteArray wavData = createHeader(dataSize);
+        // wavData.append(rawData);
+        // const SherpaOnnxWave *wave = SherpaOnnxReadWaveFromBinaryData(
+        //     wavData.constData(),
+        //     static_cast<int32_t>(wavData.size())
+        // );
+        // if (wave == NULL) {
+        //     fprintf(stderr, "Failed to read voice from binary data\n");
+        //     return;
+        // }
+
+        try{
+            qDebug() << "Test1";
+
+            // rawData 是 int16_t PCM，16kHz单通道
+            int numSamples = rawData.size() / sizeof(int16_t);
+            std::vector<float> floatSamples(numSamples);
+
+            const int16_t* pcm = reinterpret_cast<const int16_t*>(rawData.constData());
+            for (int i = 0; i < numSamples; ++i) {
+                floatSamples[i] = pcm[i] / 32768.0f; // int16 -> float [-1, 1]
+            }
+            qDebug() << "Test2";
+
+            // 直接送入 VAD
+            SherpaOnnxVoiceActivityDetectorAcceptWaveform(vad, floatSamples.data(), numSamples);
+
+            // SherpaOnnxVoiceActivityDetectorAcceptWaveform(vad, wave->samples,
+            //                                               wave->num_samples);
+            qDebug() << "Test3";
+            if (!SherpaOnnxVoiceActivityDetectorEmpty(vad)) {
+                const SherpaOnnxSpeechSegment *segment =
+                    SherpaOnnxVoiceActivityDetectorFront(vad);
+
+                voiceDetected = true;
+                float start = segment->start / 16000.0f;
+                float duration = segment->n / 16000.0f;
+                float stop = start + duration;
+
+                fprintf(stderr, "Voice detected: %d  %.3f -- %.3f\n", voiceDetected, start, stop);
+
+                SherpaOnnxDestroySpeechSegment(segment);
+                SherpaOnnxVoiceActivityDetectorPop(vad);
+            }
+            // SherpaOnnxFreeWave(wave);
+
+
+            m_audioQueue.enqueue(rawData);
+            m_totalBytesProcessed += rawData.size(); // 更新总字节数
+
+            // 调试输出
+            qDebug() << "Processed chunk:" << rawData.size() << "bytes"
+                     << "Total:" << m_totalBytesProcessed << "bytes";
+        }
+        catch (const std::exception& e) {
+            qDebug() << "Exception in VAD processing:" << e.what();
             return;
         }
-        if (wave->sample_rate != 16000) {
-            fprintf(stderr, "Expect the sample rate to be 16000. Given: %d\n",
-                    wave->sample_rate);
-            SherpaOnnxFreeWave(wave);
-            return;
-        }
-
-
-        m_audioQueue.enqueue(rawData);
-        m_totalBytesProcessed += rawData.size(); // 更新总字节数
-
-        // 调试输出
-        qDebug() << "Processed chunk:" << rawData.size() << "bytes"
-                 << "Total:" << m_totalBytesProcessed << "bytes";
     }
 }
 
@@ -281,6 +324,62 @@ QByteArray AudioCapture::resampleTo16kHzMono(const QByteArray &input, const QAud
     return output;
 }
 
+void AudioCapture::initFixedHeader() {
+    const int sampleRate = 16000;
+    const int channels = 1;
+    const int bitsPerSample = 16;
+    const int byteRate = sampleRate * channels * bitsPerSample / 8;
+    const int blockAlign = channels * bitsPerSample / 8;
+
+    fixedHeader.clear();
+    fixedHeader.reserve(36); // 固定部分大小：44-8=36字节
+
+    // WAVE标识和fmt块（固定部分）
+    fixedHeader.append("WAVEfmt ");
+
+    // fmt块内容
+    qint32 fmtSize = 16;
+    fixedHeader.append(reinterpret_cast<const char*>(&fmtSize), 4);
+    qint16 audioFormat = 1; // PCM
+    fixedHeader.append(reinterpret_cast<const char*>(&audioFormat), 2);
+    qint16 numChannels = channels;
+    fixedHeader.append(reinterpret_cast<const char*>(&numChannels), 2);
+    qint32 sampleRate32 = sampleRate;
+    fixedHeader.append(reinterpret_cast<const char*>(&sampleRate32), 4);
+    qint32 byteRate32 = byteRate;
+    fixedHeader.append(reinterpret_cast<const char*>(&byteRate32), 4);
+    qint16 blockAlign16 = blockAlign;
+    fixedHeader.append(reinterpret_cast<const char*>(&blockAlign16), 2);
+    qint16 bitsPerSample16 = bitsPerSample;
+    fixedHeader.append(reinterpret_cast<const char*>(&bitsPerSample16), 2);
+
+    // data块标识（固定部分）
+    fixedHeader.append("data");
+
+    // 固定头部大小 = 当前长度 + 4（为dataSize预留位置）
+    fixedHeaderSize = fixedHeader.size() + 4;
+}
+
+QByteArray AudioCapture::createHeader(qint64 dataSize) {
+    QByteArray header;
+    header.clear();
+    header.reserve(44);
+
+    // RIFF头（动态部分）
+    header.append("RIFF");
+    qint32 fileSize = static_cast<qint32>(dataSize + fixedHeaderSize + 8); // 8是"RIFF"和fileSize自身
+    header.append(reinterpret_cast<const char*>(&fileSize), 4);
+
+    // 添加固定部分
+    header.append(fixedHeader);
+
+    // 添加data块大小（动态部分）
+    qint32 dataSize32 = static_cast<qint32>(dataSize);
+    header.append(reinterpret_cast<const char*>(&dataSize32), 4);
+
+    return header;
+}
+
 void AudioCapture::writeWavFile()
 {
     QFile file("captured_audio.wav");
@@ -303,38 +402,7 @@ void AudioCapture::writeWavFile()
     }
 
     // 创建WAV头
-    QByteArray header;
-    header.reserve(44);
-
-    // RIFF头
-    header.append("RIFF");
-    qint32 fileSize = static_cast<qint32>(dataSize + 36);
-    header.append(reinterpret_cast<const char*>(&fileSize), 4);
-
-    // WAVE标识
-    header.append("WAVE");
-
-    // fmt块
-    header.append("fmt ");
-    qint32 fmtSize = 16;
-    header.append(reinterpret_cast<const char*>(&fmtSize), 4);
-    qint16 audioFormat = 1; // PCM
-    header.append(reinterpret_cast<const char*>(&audioFormat), 2);
-    qint16 numChannels = channels;
-    header.append(reinterpret_cast<const char*>(&numChannels), 2);
-    qint32 sampleRate32 = sampleRate;
-    header.append(reinterpret_cast<const char*>(&sampleRate32), 4);
-    qint32 byteRate32 = byteRate;
-    header.append(reinterpret_cast<const char*>(&byteRate32), 4);
-    qint16 blockAlign16 = blockAlign;
-    header.append(reinterpret_cast<const char*>(&blockAlign16), 2);
-    qint16 bitsPerSample16 = bitsPerSample;
-    header.append(reinterpret_cast<const char*>(&bitsPerSample16), 2);
-
-    // data块
-    header.append("data");
-    qint32 dataSize32 = static_cast<qint32>(dataSize);
-    header.append(reinterpret_cast<const char*>(&dataSize32), 4);
+    QByteArray header = createHeader(dataSize);
 
     // 写入头
     file.write(header);

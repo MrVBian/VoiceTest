@@ -182,7 +182,6 @@ MainWindow::MainWindow(QWidget *parent)
         }
 
 
-        SherpaOnnxDestroyVoiceActivityDetector(vad);
         SherpaOnnxFreeWave(wave);
     });
 

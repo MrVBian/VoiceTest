@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QTimer>
 #include <QAudioDevice>
+#include <c-api.h>
 
 class AudioCapture : public QObject
 {
@@ -41,7 +42,15 @@ private:
     void processRemainingData();
 
 
+
+    QByteArray fixedHeader; // 存储除dataSize外的固定头部数据
+    qint32 fixedHeaderSize; // 固定头部的大小（不包括RIFF块大小和data块大小）
+    void initFixedHeader();
+    QByteArray createHeader(qint64 dataSize);
+
     // Vad
+    const SherpaOnnxVoiceActivityDetector *vad;
+    SherpaOnnxVadModelConfig vadConfig;
     const char *vad_filename;
     int32_t use_silero_vad = 0;
     int32_t use_ten_vad = 0;
