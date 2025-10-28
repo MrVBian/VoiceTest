@@ -48,6 +48,8 @@ private:
     void initFixedHeader();
     QByteArray createHeader(qint64 dataSize);
 
+    std::vector<float> vadBuffer;  // 缓存用于VAD的浮点数据
+
     // Vad
     const SherpaOnnxVoiceActivityDetector *vad;
     SherpaOnnxVadModelConfig vadConfig;
