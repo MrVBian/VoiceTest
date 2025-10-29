@@ -11,6 +11,13 @@
 #include <QAudioDevice>
 #include <c-api.h>
 
+class VoiceData{
+public:
+    std::pair<float, float> time;
+    QString context;
+    VoiceData(const std::pair<float, float>& t, const QString& c) : time(t), context(c) {}
+};
+
 class AudioCapture : public QObject
 {
     Q_OBJECT
@@ -20,9 +27,11 @@ public:
 
     void startCapture();
     void stopCapture();
+    QVector<VoiceData> voiceData;
 
-signals:
+public:signals:
     void errorOccurred(const QString &message);
+    void voiceDataSend(const VoiceData& data);
 
 private slots:
     void processAudioData();
@@ -61,6 +70,15 @@ private:
     SherpaOnnxOfflineParaformerModelConfig paraformer_config;
     SherpaOnnxOfflineModelConfig offline_model_config;
     const SherpaOnnxOfflineRecognizer *recognizer;
+
+
+    const int sampleRate = 16000;
+    const int channels = 1;
+    const int bitsPerSample = 16;
+    const int byteRate = sampleRate * channels * bitsPerSample / 8;
+    const int blockAlign = channels * bitsPerSample / 8;
+    // 计算32ms音频数据所需字节数（使用实际采样率）
+    const int kBufferDurationMs = 32;
 };
 
 #endif // AUDIOCAPTURE_H

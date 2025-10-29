@@ -10,7 +10,7 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
 {
     setupAudioFormat();
     m_timer = new QTimer(this);
-    m_timer->setInterval(32);
+    m_timer->setInterval(kBufferDurationMs);
     connect(m_timer, &QTimer::timeout, this, &AudioCapture::processAudioData);
     m_totalBytesProcessed = 0; // 在构造函数中初始化
 
@@ -30,16 +30,18 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
 
     memset(&vadConfig, 0, sizeof(vadConfig));
 
+    // Silero VAD 配置参数
     vadConfig.silero_vad.model = vad_filename;
-    vadConfig.silero_vad.threshold = 0.25;
-    vadConfig.silero_vad.min_silence_duration = 0.5;
-    vadConfig.silero_vad.min_speech_duration = 0.5;
-    vadConfig.silero_vad.max_speech_duration = 10;
-    vadConfig.silero_vad.window_size = 512;
+    vadConfig.silero_vad.threshold = 0.3;           // 语音活动检测的阈值，范围[0,1]，值越小对语音越敏感
+    vadConfig.silero_vad.min_silence_duration = 0.2; // 最小静音持续时间（秒），短于此时间的静音会被忽略
+    vadConfig.silero_vad.min_speech_duration = 0.2;  // 最小语音持续时间（秒），短于此时间的语音段会被过滤
+    vadConfig.silero_vad.max_speech_duration = 10;   // 最大单段语音持续时间（秒），用于限制单次语音输入长度
+    vadConfig.silero_vad.window_size = 512;          // 分析窗口大小（采样点数），影响VAD的时间分辨率
 
-    vadConfig.sample_rate = 16000;
-    vadConfig.num_threads = 1;
-    vadConfig.debug = 1;
+    // 音频处理基础配置
+    vadConfig.sample_rate = 16000;  // 音频采样率（Hz），通常使用16kHz用于语音处理
+    vadConfig.num_threads = 2;      // 处理线程数，1表示单线程处理
+    vadConfig.debug = 0;            // 调试模式开关，1开启调试信息输出，0关闭
 
     vad = SherpaOnnxCreateVoiceActivityDetector(&vadConfig, 30);
 
@@ -61,8 +63,8 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
 
     // Offline model config
     memset(&offline_model_config, 0, sizeof(offline_model_config));
-    offline_model_config.debug = 1;
-    offline_model_config.num_threads = 1;
+    offline_model_config.debug = 0;
+    offline_model_config.num_threads = 2;
     offline_model_config.provider = provider;
     offline_model_config.tokens = tokens_filename;
     offline_model_config.paraformer = paraformer_config;
@@ -80,6 +82,7 @@ AudioCapture::~AudioCapture()
 {
     stopCapture();
     SherpaOnnxDestroyVoiceActivityDetector(vad);
+    SherpaOnnxDestroyOfflineRecognizer(recognizer);
 }
 
 void AudioCapture::setupAudioFormat()
@@ -108,6 +111,7 @@ void AudioCapture::setupAudioFormat()
 void AudioCapture::startCapture()
 {
     if (m_audioSource) return;
+    voiceData.clear();
 
     QAudioDevice device = QMediaDevices::defaultAudioInput();
     m_audioSource = new QAudioSource(device, m_audioFormat, this);
@@ -178,7 +182,6 @@ void AudioCapture::processRemainingData()
     if (rawData.isEmpty())
         return;
 
-    bool voiceDetected = false;
     try{
         int numSamples = rawData.size() / sizeof(int16_t);
         const int16_t* pcm = reinterpret_cast<const int16_t*>(rawData.constData());
@@ -195,15 +198,36 @@ void AudioCapture::processRemainingData()
             const SherpaOnnxSpeechSegment *segment =
                 SherpaOnnxVoiceActivityDetectorFront(vad);
 
-            voiceDetected = true;
             float start = segment->start / 16000.0f;
             float duration = segment->n / 16000.0f;
             float stop = start + duration;
 
-            qDebug() << QString("Voice detected: %1   start=%2, stop=%3")
-                            .arg(voiceDetected)    // %1
-                            .arg(start, 0, 'f', 3) // %2 (格式化为浮点数，保留3位小数)
-                            .arg(stop, 0, 'f', 3); // %3
+            if (recognizer == NULL) {
+                fprintf(stderr, "Please check your config!\n");
+            }
+            else {
+                const SherpaOnnxOfflineStream *stream =
+                    SherpaOnnxCreateOfflineStream(recognizer);
+
+                try{
+                    SherpaOnnxAcceptWaveformOffline(stream, sampleRate, segment->samples,
+                                                    segment->n);
+                    SherpaOnnxDecodeOfflineStream(recognizer, stream);
+                    const SherpaOnnxOfflineRecognizerResult *result = SherpaOnnxGetOfflineStreamResult(stream);
+
+                    auto tmp = VoiceData(std::make_pair(start, stop), result->text);
+                    emit voiceDataSend(tmp);
+                    voiceData.append(tmp);
+                    // QString context = QString("%1-%2  Decoded text: %s").arg(start, 0, 'f', 3).arg(stop, 0, 'f', 3).arg(result->text);
+
+                    SherpaOnnxDestroyOfflineRecognizerResult(result);
+                }
+                catch (const std::exception& e) {
+                    qDebug() << "Exception in VAD processing:" << e.what();
+                }
+
+                SherpaOnnxDestroyOfflineStream(stream);
+            }
 
             SherpaOnnxDestroySpeechSegment(segment);
             SherpaOnnxVoiceActivityDetectorPop(vad);
@@ -225,8 +249,6 @@ void AudioCapture::processAudioData()
 {
     if (!m_audioIO) return;
 
-    // 计算32ms音频数据所需字节数（使用实际采样率）
-    const int kBufferDurationMs = 32;
     int bytesPerFrame = m_audioFormat.bytesPerFrame();
     int bytesNeeded = (m_audioFormat.sampleRate() * bytesPerFrame * kBufferDurationMs) / 1000;
     bytesNeeded = qMax(bytesNeeded, 0);
@@ -253,7 +275,6 @@ void AudioCapture::processAudioData()
         return;
     }
 
-    bool voiceDetected = false;
     try{
         // rawData 是 int16_t PCM，16kHz单通道
         int numSamples = rawData.size() / sizeof(int16_t);
@@ -265,22 +286,15 @@ void AudioCapture::processAudioData()
 
         // 直接送入 VAD
         SherpaOnnxVoiceActivityDetectorAcceptWaveform(vad, floatSamples.data(), numSamples);
-        qDebug() << "TEST: " << !SherpaOnnxVoiceActivityDetectorEmpty(vad);
+        // qDebug() << "TEST: " << !SherpaOnnxVoiceActivityDetectorEmpty(vad);
 
         while (!SherpaOnnxVoiceActivityDetectorEmpty(vad)) {
             const SherpaOnnxSpeechSegment *segment =
                 SherpaOnnxVoiceActivityDetectorFront(vad);
 
-            voiceDetected = true;
             float start = segment->start / 16000.0f;
             float duration = segment->n / 16000.0f;
             float stop = start + duration;
-
-            qDebug() << QString("Voice detected: %1   start=%2, stop=%3")
-                            .arg(voiceDetected)    // %1
-                            .arg(start, 0, 'f', 3) // %2 (格式化为浮点数，保留3位小数)
-                            .arg(stop, 0, 'f', 3); // %3
-
 
             if (recognizer == NULL) {
                 fprintf(stderr, "Please check your config!\n");
@@ -289,18 +303,24 @@ void AudioCapture::processAudioData()
                 const SherpaOnnxOfflineStream *stream =
                     SherpaOnnxCreateOfflineStream(recognizer);
 
-                // SherpaOnnxAcceptWaveformOffline(stream, wave->sample_rate, wave->samples,
-                //                                 wave->num_samples);
-                // SherpaOnnxDecodeOfflineStream(recognizer, stream);
-                // const SherpaOnnxOfflineRecognizerResult *result =
-                //     SherpaOnnxGetOfflineStreamResult(stream);
+                try{
+                    SherpaOnnxAcceptWaveformOffline(stream, sampleRate, segment->samples,
+                                                    segment->n);
+                    SherpaOnnxDecodeOfflineStream(recognizer, stream);
+                    const SherpaOnnxOfflineRecognizerResult *result = SherpaOnnxGetOfflineStreamResult(stream);
 
-                // fprintf(stderr, "Decoded text: %s\n", result->text);
+                    auto tmp = VoiceData(std::make_pair(start, stop), result->text);
+                    emit voiceDataSend(tmp);
+                    voiceData.append(tmp);
+                    // QString context = QString("%1-%2  Decoded text: %s").arg(start, 0, 'f', 3).arg(stop, 0, 'f', 3).arg(result->text);
 
-                // SherpaOnnxDestroyOfflineRecognizerResult(result);
-                // SherpaOnnxDestroyOfflineStream(stream);
-                // SherpaOnnxDestroyOfflineRecognizer(recognizer);
-                // SherpaOnnxFreeWave(wave);
+                    SherpaOnnxDestroyOfflineRecognizerResult(result);
+                }
+                catch (const std::exception& e) {
+                    qDebug() << "Exception in VAD processing:" << e.what();
+                }
+
+                SherpaOnnxDestroyOfflineStream(stream);
             }
 
 
@@ -310,9 +330,9 @@ void AudioCapture::processAudioData()
         m_audioQueue.enqueue(rawData);
         m_totalBytesProcessed += rawData.size(); // 更新总字节数
 
-        // 调试输出
-        qDebug() << "Processed chunk:" << rawData.size() << "bytes"
-                 << "Total:" << m_totalBytesProcessed << "bytes";
+        // // 调试输出
+        // qDebug() << "Processed chunk:" << rawData.size() << "bytes"
+        //          << "Total:" << m_totalBytesProcessed << "bytes";
     }
     catch (const std::exception& e) {
         qDebug() << "Exception in VAD processing:" << e.what();
@@ -324,10 +344,9 @@ QByteArray AudioCapture::resampleTo16kHzMono(const QByteArray &input, const QAud
 {
     // 输入参数
     const int inSampleRate = format.sampleRate();
-    const int outSampleRate = 16000;
+    const int outSampleRate = sampleRate;
     const int channels = format.channelCount();
     const int bytesPerSample = format.bytesPerSample();
-    const int kBufferDurationMs = 32;
 
     // 验证输入格式
     if (bytesPerSample != sizeof(qint16)) {
@@ -389,12 +408,6 @@ QByteArray AudioCapture::resampleTo16kHzMono(const QByteArray &input, const QAud
 }
 
 void AudioCapture::initFixedHeader() {
-    const int sampleRate = 16000;
-    const int channels = 1;
-    const int bitsPerSample = 16;
-    const int byteRate = sampleRate * channels * bitsPerSample / 8;
-    const int blockAlign = channels * bitsPerSample / 8;
-
     fixedHeader.clear();
     fixedHeader.reserve(36); // 固定部分大小：44-8=36字节
 
@@ -451,13 +464,6 @@ void AudioCapture::writeWavFile()
         emit errorOccurred("Failed to create WAV file");
         return;
     }
-
-    // WAV参数
-    const int sampleRate = 16000;
-    const int channels = 1;
-    const int bitsPerSample = 16;
-    const int byteRate = sampleRate * channels * bitsPerSample / 8;
-    const int blockAlign = channels * bitsPerSample / 8;
 
     // 计算总数据大小
     qint64 dataSize = 0;

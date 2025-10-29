@@ -22,5 +22,10 @@ private:
     Ui::MainWindow *ui;
 
     AudioCapture *audioCapture;
+
+    size_t ReadFile(const char *filename, char **buffer_out);
+
+private slots:
+    void onVoiceDataReceived(const VoiceData& data);
 };
 #endif // MAINWINDOW_H

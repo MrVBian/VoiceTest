@@ -7,6 +7,7 @@
 #include <string.h>
 #include "sherpa-onnx/c-api/c-api.h"
 
+
 #include <QDebug>
 #include <QDir>
 #include <QMessageBox>
@@ -190,6 +191,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     audioCapture = new AudioCapture(this);
 
+    connect(audioCapture, &AudioCapture::voiceDataSend,
+            this, &MainWindow::onVoiceDataReceived);
+
     connect(ui->testBtn2, &QPushButton::clicked, this, [this, appDir]() {
         audioCapture->startCapture();
     });
@@ -202,4 +206,19 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+void MainWindow::onVoiceDataReceived(const VoiceData& data)
+{
+    // 格式化显示文本，例如："[开始时间-结束时间] 识别文本"
+    QString displayText = QString("[%1-%2] %3")
+                              .arg(data.time.first, 0, 'f', 2)
+                              .arg(data.time.second, 0, 'f', 2)
+                              .arg(data.context);
+
+    // 添加到listWidget
+    ui->listWidget->addItem(displayText);
+
+    // 可选：自动滚动到最后一项
+    ui->listWidget->scrollToBottom();
 }

@@ -13,13 +13,8 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets LinguistTools Multimed
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets LinguistTools Multimedia)
 
 
-
 add_subdirectory(third_party/onnxruntime)
 add_subdirectory(third_party/sherpa-onnx)
-
-
-
-
 
 set(TS_FILES untitled_zh_CN.ts)
 
@@ -63,25 +58,20 @@ else()
 endif()
 
 
-
-
-
-
-
-
 target_link_libraries(untitled PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Multimedia onnxruntime sherpa-onnx)
 
-
-
-
-
-
-
-
-
-
-
-
+# 复制onnxruntime.dll到输出目录
+if(TARGET onnxruntime)
+    get_target_property(ONNXRUNTIME_DLL onnxruntime IMPORTED_LOCATION)
+    add_custom_command(TARGET untitled POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ONNXRUNTIME_DLL}"
+            $<TARGET_FILE_DIR:untitled>
+        COMMENT "Copying onnxruntime.dll to output directory"
+    )
+else()
+    message(WARNING "onnxruntime target not found, skipping DLL copy")
+endif()
 
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
@@ -107,4 +97,20 @@ install(TARGETS untitled
 
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(untitled)
+endif()
+
+
+# 仅在Windows平台添加部署工具
+if(WIN32)
+    # 自动定位windeployqt
+    get_target_property(QMAKE_EXE Qt${QT_VERSION_MAJOR}::qmake IMPORTED_LOCATION)
+    get_filename_component(QT_BIN_DIR "${QMAKE_EXE}" DIRECTORY)
+
+    add_custom_command(TARGET untitled POST_BUILD
+        COMMAND "${QT_BIN_DIR}/windeployqt.exe"
+                --verbose 1
+                --no-translations
+                \"$<TARGET_FILE:untitled>\"
+        COMMENT "Deploying Qt libraries with windeployqt..."
+    )
 endif()
