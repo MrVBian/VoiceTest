@@ -56,6 +56,11 @@ private:
     const char *vad_filename;
     int32_t use_silero_vad = 0;
     int32_t use_ten_vad = 0;
+
+
+    SherpaOnnxOfflineParaformerModelConfig paraformer_config;
+    SherpaOnnxOfflineModelConfig offline_model_config;
+    const SherpaOnnxOfflineRecognizer *recognizer;
 };
 
 #endif // AUDIOCAPTURE_H

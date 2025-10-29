@@ -10,6 +10,7 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
 {
     setupAudioFormat();
     m_timer = new QTimer(this);
+    m_timer->setInterval(32);
     connect(m_timer, &QTimer::timeout, this, &AudioCapture::processAudioData);
     m_totalBytesProcessed = 0; // 在构造函数中初始化
 
@@ -22,10 +23,6 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
         printf("Use silero-vad\n");
         vad_filename = "./vad/silero_vad.onnx";
         use_silero_vad = 1;
-    } else if (SherpaOnnxFileExists("./vad/ten-vad.onnx")) {
-        printf("Use ten-vad\n");
-        vad_filename = "./vad/ten-vad.onnx";
-        use_ten_vad = 1;
     } else {
         fprintf(stderr, "Please provide either silero_vad.onnx or ten-vad.onnx\n");
         return;
@@ -33,21 +30,12 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
 
     memset(&vadConfig, 0, sizeof(vadConfig));
 
-    if (use_silero_vad) {
-        vadConfig.silero_vad.model = vad_filename;
-        vadConfig.silero_vad.threshold = 0.25;
-        vadConfig.silero_vad.min_silence_duration = 0.5;
-        vadConfig.silero_vad.min_speech_duration = 0.5;
-        vadConfig.silero_vad.max_speech_duration = 10;
-        vadConfig.silero_vad.window_size = 512;
-    } else if (use_ten_vad) {
-        vadConfig.ten_vad.model = vad_filename;
-        vadConfig.ten_vad.threshold = 0.25;
-        vadConfig.ten_vad.min_silence_duration = 0.5;
-        vadConfig.ten_vad.min_speech_duration = 0.5;
-        vadConfig.ten_vad.max_speech_duration = 10;
-        vadConfig.ten_vad.window_size = 256;
-    }
+    vadConfig.silero_vad.model = vad_filename;
+    vadConfig.silero_vad.threshold = 0.25;
+    vadConfig.silero_vad.min_silence_duration = 0.5;
+    vadConfig.silero_vad.min_speech_duration = 0.5;
+    vadConfig.silero_vad.max_speech_duration = 10;
+    vadConfig.silero_vad.window_size = 512;
 
     vadConfig.sample_rate = 16000;
     vadConfig.num_threads = 1;
@@ -59,6 +47,33 @@ AudioCapture::AudioCapture(QObject *parent) : QObject(parent)
         fprintf(stderr, "Please check your recognizer config!\n");
         return ;
     }
+
+
+
+    // Paraformer config
+    const char *model_filename =
+        "sherpa-onnx-paraformer-zh-small/model.int8.onnx";
+    const char *tokens_filename =
+        "sherpa-onnx-paraformer-zh-small/tokens.txt";
+    const char *provider = "cpu";
+    memset(&paraformer_config, 0, sizeof(paraformer_config));
+    paraformer_config.model = model_filename;
+
+    // Offline model config
+    memset(&offline_model_config, 0, sizeof(offline_model_config));
+    offline_model_config.debug = 1;
+    offline_model_config.num_threads = 1;
+    offline_model_config.provider = provider;
+    offline_model_config.tokens = tokens_filename;
+    offline_model_config.paraformer = paraformer_config;
+
+    // Recognizer config
+    SherpaOnnxOfflineRecognizerConfig recognizer_config;
+    memset(&recognizer_config, 0, sizeof(recognizer_config));
+    recognizer_config.decoding_method = "greedy_search";
+    recognizer_config.model_config = offline_model_config;
+
+    recognizer = SherpaOnnxCreateOfflineRecognizer(&recognizer_config);
 }
 
 AudioCapture::~AudioCapture()
@@ -107,7 +122,7 @@ void AudioCapture::startCapture()
     m_totalBytesProcessed = 0; // 确保这里使用了成员变量
 
     // 使用更精确的定时器
-    m_timer->start(32); // 20ms间隔
+    m_timer->start();
     qDebug() << "Capture started with format:"
              << "\nSample rate:" << m_audioFormat.sampleRate()
              << "\nChannels:" << m_audioFormat.channelCount()
@@ -155,13 +170,54 @@ void AudioCapture::processRemainingData()
 
     // 如果需要重采样
     if (m_resampleRequired) {
+        qDebug() << "Resampling... Original size:" << rawData.size();
         rawData = resampleTo16kHzMono(rawData, m_audioFormat);
+        qDebug() << "Resampled size:" << rawData.size();
     }
 
-    if (!rawData.isEmpty()) {
+    if (rawData.isEmpty())
+        return;
+
+    bool voiceDetected = false;
+    try{
+        int numSamples = rawData.size() / sizeof(int16_t);
+        const int16_t* pcm = reinterpret_cast<const int16_t*>(rawData.constData());
+        std::vector<float> floatSamples(numSamples);
+        for (int i = 0; i < numSamples; ++i) {
+            floatSamples[i] = pcm[i] / 32768.0f; // int16 -> float [-1, 1]
+        }
+
+        // 直接送入 VAD
+        SherpaOnnxVoiceActivityDetectorAcceptWaveform(vad, floatSamples.data(), numSamples);
+        SherpaOnnxVoiceActivityDetectorFlush(vad);
+
+        while (!SherpaOnnxVoiceActivityDetectorEmpty(vad)) {
+            const SherpaOnnxSpeechSegment *segment =
+                SherpaOnnxVoiceActivityDetectorFront(vad);
+
+            voiceDetected = true;
+            float start = segment->start / 16000.0f;
+            float duration = segment->n / 16000.0f;
+            float stop = start + duration;
+
+            qDebug() << QString("Voice detected: %1   start=%2, stop=%3")
+                            .arg(voiceDetected)    // %1
+                            .arg(start, 0, 'f', 3) // %2 (格式化为浮点数，保留3位小数)
+                            .arg(stop, 0, 'f', 3); // %3
+
+            SherpaOnnxDestroySpeechSegment(segment);
+            SherpaOnnxVoiceActivityDetectorPop(vad);
+        }
         m_audioQueue.enqueue(rawData);
         m_totalBytesProcessed += rawData.size(); // 更新总字节数
+
+        // 调试输出
         qDebug() << "Processed remaining data:" << rawData.size() << "bytes";
+
+    }
+    catch (const std::exception& e) {
+        qDebug() << "Exception in VAD processing:" << e.what();
+        return;
     }
 }
 
@@ -169,12 +225,7 @@ void AudioCapture::processAudioData()
 {
     if (!m_audioIO) return;
 
-    // 计算20ms音频数据所需字节数（使用实际采样率）
-    // sampleRate: 48000
-    // bytesPerFrame: 4(2通道*2字节)
-    // bytesNeeded: 3840
-    // rawData: 3840/640
-
+    // 计算32ms音频数据所需字节数（使用实际采样率）
     const int kBufferDurationMs = 32;
     int bytesPerFrame = m_audioFormat.bytesPerFrame();
     int bytesNeeded = (m_audioFormat.sampleRate() * bytesPerFrame * kBufferDurationMs) / 1000;
@@ -193,63 +244,79 @@ void AudioCapture::processAudioData()
     //                 .arg(rawData.size());
     // 如果需要重采样
     if (m_resampleRequired) {
+        // qDebug() << "Resampling... Original size:" << rawData.size();
         rawData = resampleTo16kHzMono(rawData, m_audioFormat);
-        // qDebug() << "PCM: " << rawData.size();
+        // qDebug() << "Resampled size:" << rawData.size();  // 应为512*sizeof(int16_t)=1024
+    }
+
+    if (rawData.isEmpty()){
+        return;
     }
 
     bool voiceDetected = false;
-    if (!rawData.isEmpty()) {
-        try{
-            // rawData 是 int16_t PCM，16kHz单通道
-            int numSamples = rawData.size() / sizeof(int16_t);
-            if (numSamples <= 0) return;
-
-            const int16_t* pcm = reinterpret_cast<const int16_t*>(rawData.constData());
-            std::vector<float> floatSamples(numSamples);
-            for (int i = 0; i < numSamples; ++i) {
-                floatSamples[i] = pcm[i] / 32768.0f; // int16 -> float [-1, 1]
-            }
-            if (!vad) {
-                qWarning() << "VAD is not initialized!";
-                return;
-            }
-
-            // 直接送入 VAD
-            SherpaOnnxVoiceActivityDetectorAcceptWaveform(vad, floatSamples.data(), numSamples);
-            // SherpaOnnxVoiceActivityDetectorFlush(vad);
-
-
-            while (!SherpaOnnxVoiceActivityDetectorEmpty(vad)) {
-                const SherpaOnnxSpeechSegment *segment =
-                    SherpaOnnxVoiceActivityDetectorFront(vad);
-
-                voiceDetected = true;
-                float start = segment->start / 16000.0f;
-                float duration = segment->n / 16000.0f;
-                float stop = start + duration;
-
-                qDebug() << QString("Voice detected: %1   start=%2, stop=%3")
-                                .arg(voiceDetected)    // %1
-                                .arg(start, 0, 'f', 3) // %2 (格式化为浮点数，保留3位小数)
-                                .arg(stop, 0, 'f', 3); // %3
-
-                SherpaOnnxDestroySpeechSegment(segment);
-                SherpaOnnxVoiceActivityDetectorPop(vad);
-            }
-            // SherpaOnnxFreeWave(wave);
-
-
-            m_audioQueue.enqueue(rawData);
-            m_totalBytesProcessed += rawData.size(); // 更新总字节数
-
-            // 调试输出
-            qDebug() << "Processed chunk:" << rawData.size() << "bytes"
-                     << "Total:" << m_totalBytesProcessed << "bytes";
+    try{
+        // rawData 是 int16_t PCM，16kHz单通道
+        int numSamples = rawData.size() / sizeof(int16_t);
+        const int16_t* pcm = reinterpret_cast<const int16_t*>(rawData.constData());
+        std::vector<float> floatSamples(numSamples);
+        for (int i = 0; i < numSamples; ++i) {
+            floatSamples[i] = pcm[i] / 32768.0f; // int16 -> float [-1, 1]
         }
-        catch (const std::exception& e) {
-            qDebug() << "Exception in VAD processing:" << e.what();
-            return;
+
+        // 直接送入 VAD
+        SherpaOnnxVoiceActivityDetectorAcceptWaveform(vad, floatSamples.data(), numSamples);
+        qDebug() << "TEST: " << !SherpaOnnxVoiceActivityDetectorEmpty(vad);
+
+        while (!SherpaOnnxVoiceActivityDetectorEmpty(vad)) {
+            const SherpaOnnxSpeechSegment *segment =
+                SherpaOnnxVoiceActivityDetectorFront(vad);
+
+            voiceDetected = true;
+            float start = segment->start / 16000.0f;
+            float duration = segment->n / 16000.0f;
+            float stop = start + duration;
+
+            qDebug() << QString("Voice detected: %1   start=%2, stop=%3")
+                            .arg(voiceDetected)    // %1
+                            .arg(start, 0, 'f', 3) // %2 (格式化为浮点数，保留3位小数)
+                            .arg(stop, 0, 'f', 3); // %3
+
+
+            if (recognizer == NULL) {
+                fprintf(stderr, "Please check your config!\n");
+            }
+            else {
+                const SherpaOnnxOfflineStream *stream =
+                    SherpaOnnxCreateOfflineStream(recognizer);
+
+                // SherpaOnnxAcceptWaveformOffline(stream, wave->sample_rate, wave->samples,
+                //                                 wave->num_samples);
+                // SherpaOnnxDecodeOfflineStream(recognizer, stream);
+                // const SherpaOnnxOfflineRecognizerResult *result =
+                //     SherpaOnnxGetOfflineStreamResult(stream);
+
+                // fprintf(stderr, "Decoded text: %s\n", result->text);
+
+                // SherpaOnnxDestroyOfflineRecognizerResult(result);
+                // SherpaOnnxDestroyOfflineStream(stream);
+                // SherpaOnnxDestroyOfflineRecognizer(recognizer);
+                // SherpaOnnxFreeWave(wave);
+            }
+
+
+            SherpaOnnxDestroySpeechSegment(segment);
+            SherpaOnnxVoiceActivityDetectorPop(vad);
         }
+        m_audioQueue.enqueue(rawData);
+        m_totalBytesProcessed += rawData.size(); // 更新总字节数
+
+        // 调试输出
+        qDebug() << "Processed chunk:" << rawData.size() << "bytes"
+                 << "Total:" << m_totalBytesProcessed << "bytes";
+    }
+    catch (const std::exception& e) {
+        qDebug() << "Exception in VAD processing:" << e.what();
+        return;
     }
 }
 

@@ -57,6 +57,7 @@ MainWindow::MainWindow(QWidget *parent)
         const SherpaOnnxOfflineRecognizer *recognizer =
             SherpaOnnxCreateOfflineRecognizer(&recognizer_config);
 
+        /////////////////
         if (recognizer == NULL) {
             fprintf(stderr, "Please check your config!\n");
             SherpaOnnxFreeWave(wave);
@@ -164,6 +165,7 @@ MainWindow::MainWindow(QWidget *parent)
                 SherpaOnnxVoiceActivityDetectorFlush(vad);
                 is_eof = 1;
             }
+            qDebug() << "TEST: " << !SherpaOnnxVoiceActivityDetectorEmpty(vad);
             while (!SherpaOnnxVoiceActivityDetectorEmpty(vad)) {
                 const SherpaOnnxSpeechSegment *segment =
                     SherpaOnnxVoiceActivityDetectorFront(vad);
